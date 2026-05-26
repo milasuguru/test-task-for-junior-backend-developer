@@ -38,8 +38,32 @@ func main() {
 	taskRepo := postgresrepo.New(pool)
 	taskUsecase := task.NewService(taskRepo)
 	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
+
+	scheduleRepo := postgresrepo.NewScheduleRepository(pool)
+	scheduleUsecase := task.NewScheduleService(scheduleRepo, taskRepo)
+	scheduleHandler := httphandlers.NewScheduleHandler(scheduleUsecase)
+
 	docsHandler := swaggerdocs.NewHandler()
-	router := transporthttp.NewRouter(taskHandler, docsHandler)
+	router := transporthttp.NewRouter(taskHandler, scheduleHandler, docsHandler)
+
+	// Cron-job: каждую ночь в полночь генерируем задачи по расписаниям
+	go func() {
+		for {
+			now := time.Now().UTC()
+			next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+			sleepDuration := time.Until(next)
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(sleepDuration):
+				logger.Info("running scheduled task generation")
+				if err := scheduleUsecase.GenerateTasks(context.Background()); err != nil {
+					logger.Error("generate tasks", "error", err)
+				}
+			}
+		}
+	}()
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
